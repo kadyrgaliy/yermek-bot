@@ -1,0 +1,21 @@
+{
+  "name": "yermek-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot with Kaspi payment verification",
+  "main": "src/bot.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/bot.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "jsqr": "^1.4.0",
+    "pdfjs-dist": "^5.6.205",
+    "pg": "^8.11.0",
+    "pngjs": "^7.0.0",
+    "sharp": "^0.34.5",
+    "telegraf": "^4.16.0"
+  }
+}
