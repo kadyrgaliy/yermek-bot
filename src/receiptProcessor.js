@@ -3,19 +3,14 @@ const sharp = require('sharp');
 const { PNG } = require('pngjs');
 const db = require('./database');
 
-const GUIDE_PRICE = parseFloat(process.env.GUIDE_PRICE || '5000');
+const GUIDE_PRICE = parseFloat(process.env.GUIDE_PRICE || '23000');
 const MERCHANT_IIN = process.env.MERCHANT_IIN || '';
 const GUIDE_PDF_PATH = process.env.GUIDE_PDF_PATH || './guide.pdf';
 
-/**
- * Handle incoming photo or PDF document — check if it's a Kaspi receipt.
- * Returns true if handled (whether success or failure), false if not a receipt.
- */
-async function handleReceipt(bot, ctx, serviceId = 'guide') {
+async function handleReceipt(bot, ctx, serviceId = 'guide', txt = {}) {
   const msg = ctx.message;
   const chatId = msg.chat.id;
 
-  // Determine file_id and mime_type
   let fileId, mimeType;
   if (msg.photo && msg.photo.length > 0) {
     fileId = msg.photo[msg.photo.length - 1].file_id;
@@ -27,8 +22,7 @@ async function handleReceipt(bot, ctx, serviceId = 'guide') {
     return false;
   }
 
-  // Send ack immediately
-  const ack = await ctx.reply('Чекті тексеруімін... ⏳');
+  const ack = await ctx.reply(txt.checking || 'Чекті тексеруімін... ⏳');
   const ackMsgId = ack.message_id;
 
   const editAck = async (text) => {
@@ -39,7 +33,6 @@ async function handleReceipt(bot, ctx, serviceId = 'guide') {
     }
   };
 
-  // Download file buffer
   let buffer;
   try {
     const fileLink = await bot.telegram.getFileLink(fileId);
@@ -47,11 +40,10 @@ async function handleReceipt(bot, ctx, serviceId = 'guide') {
     buffer = Buffer.from(await res.arrayBuffer());
   } catch (err) {
     console.error('[receipt] download error:', err.message);
-    await editAck('Файлды жүктеу кезінде қате болды. Қайтадан жіберіп көріңіз.');
+    await editAck(txt.downloadError || 'Файлды жүктеу кезінде қате болды. Қайтадан жіберіп көріңіз.');
     return true;
   }
 
-  // Parse receipt — PDF: text parsing, Photo: QR code
   let receiptData;
   try {
     console.log('[receipt] processing, mimeType:', mimeType, 'size:', buffer.length);
@@ -70,38 +62,35 @@ async function handleReceipt(bot, ctx, serviceId = 'guide') {
     return false;
   }
 
-  // Validate: merchant IIN
   if (MERCHANT_IIN && receiptData.iin !== MERCHANT_IIN) {
-    await editAck('Бұл чек біздің шотқа жатпайды. Дұрыс чекті жіберіңіз.');
+    await editAck(txt.wrongMerchant || 'Бұл чек біздің шотқа жатпайды. Дұрыс чекті жіберіңіз.');
     return true;
   }
 
-  // Validate: freshness (24h)
   if (receiptData.receiptDate) {
     const ageMs = Date.now() - receiptData.receiptDate.getTime();
     if (ageMs > 24 * 60 * 60 * 1000) {
-      await editAck('Бұл чектің мерзімі өткен (24 сағаттан астам). Жаңа чекті жіберіңіз.');
+      await editAck(txt.expired || 'Бұл чектің мерзімі өткен (24 сағаттан астам). Жаңа чекті жіберіңіз.');
       return true;
     }
   }
 
-  // Validate: duplicate
   const existing = await db.findReceipt(receiptData.receipt_id);
   if (existing) {
-    await editAck('Бұл чек бұрын қолданылған.');
+    await editAck(txt.duplicate || 'Бұл чек бұрын қолданылған.');
     return true;
   }
 
-  // Validate: amount
   if (parseFloat(receiptData.amount) < GUIDE_PRICE) {
-    await editAck(
-      `Төлем сомасы жеткіліксіз. Гайдтың бағасы: ${GUIDE_PRICE.toLocaleString('ru-KZ')} ₸. ` +
-      `Сіздің төлеміңіз: ${parseFloat(receiptData.amount).toLocaleString('ru-KZ')} ₸.`
-    );
+    const price = GUIDE_PRICE.toLocaleString('ru-KZ');
+    const paid = parseFloat(receiptData.amount).toLocaleString('ru-KZ');
+    const message = typeof txt.insufficientAmount === 'function'
+      ? txt.insufficientAmount(price, paid)
+      : `Төлем сомасы жеткіліксіз. Гайдтың бағасы: ${price} ₸. Сіздің төлеміңіз: ${paid} ₸.`;
+    await editAck(message);
     return true;
   }
 
-  // Save receipt
   try {
     await db.saveReceipt({
       telegramId: chatId,
@@ -116,63 +105,59 @@ async function handleReceipt(bot, ctx, serviceId = 'guide') {
     });
   } catch (err) {
     console.error('[receipt] DB save error:', err.message);
-    await editAck('Деректер базасына сақтау кезінде қате болды. Менеджерге хабарлаңыз.');
+    await editAck(txt.dbError || 'Деректер базасына сақтау кезінде қате болды. Менеджерге хабарлаңыз.');
     return true;
   }
 
-  // Success — deliver content
-  await editAck('Төлем расталды! ✅ Жіберілуде...');
-  await deliverService(bot, chatId, serviceId);
+  await editAck(txt.paymentConfirmed || 'Төлем расталды! ✅ Жіберілуде...');
+  await deliverService(bot, chatId, serviceId, txt);
   return true;
 }
 
-async function deliverService(bot, chatId, serviceId) {
+async function deliverService(bot, chatId, serviceId, txt = {}) {
   const fs = require('fs');
   const services = require('./services');
 
-  // Guide (PDF гайд) — default
   if (serviceId === 'guide') {
     try {
       if (!fs.existsSync(GUIDE_PDF_PATH)) {
-        await bot.telegram.sendMessage(chatId, 'Рахмет! Гайдыңыз дайындалуда, жақында жіберіледі. 🎉');
+        await bot.telegram.sendMessage(chatId, txt.guideNotFound || 'Рахмет! Гайдыңыз дайындалуда, жақында жіберіледі. 🎉');
         console.warn('[receipt] PDF not found at:', GUIDE_PDF_PATH);
         return;
       }
       await bot.telegram.sendDocument(chatId, { source: GUIDE_PDF_PATH }, {
-        caption: 'Рахмет! Гайдыңыз осында 🎉 Сәттілік тілейміз!',
+        caption: txt.guideCaption || 'Рахмет! Гайдыңыз осында 🎉 Сәттілік тілейміз!',
       });
     } catch (err) {
       console.error('[receipt] PDF send error:', err.message);
-      await bot.telegram.sendMessage(chatId, 'Жіберу кезінде қате болды. Менеджерге хабарлаңыз.');
+      await bot.telegram.sendMessage(chatId, txt.sendError || 'Жіберу кезінде қате болды. Менеджерге хабарлаңыз.');
     }
     return;
   }
 
-  // Басқа қызметтер
   const service = services[serviceId];
   if (!service) {
-    await bot.telegram.sendMessage(chatId, 'Рахмет! Менеджер жақын арада байланысады. 🎉');
+    await bot.telegram.sendMessage(chatId, txt.managerContact || 'Рахмет! Менеджер жақын арада байланысады. 🎉');
     return;
   }
 
   try {
     if (service.deliveryType === 'file' && service.filePath && fs.existsSync(service.filePath)) {
       await bot.telegram.sendDocument(chatId, { source: service.filePath }, {
-        caption: service.deliveryText || 'Рахмет! 🎉',
+        caption: service.deliveryText || txt.guideCaption || 'Рахмет! 🎉',
         parse_mode: 'Markdown',
       });
     } else {
-      await bot.telegram.sendMessage(chatId, service.deliveryText || 'Рахмет! 🎉', {
+      await bot.telegram.sendMessage(chatId, service.deliveryText || txt.managerContact || 'Рахмет! 🎉', {
         parse_mode: 'Markdown',
       });
     }
   } catch (err) {
     console.error('[receipt] delivery error:', err.message);
-    await bot.telegram.sendMessage(chatId, 'Жіберу кезінде қате болды. Менеджерге хабарлаңыз.');
+    await bot.telegram.sendMessage(chatId, txt.sendError || 'Жіберу кезінде қате болды. Менеджерге хабарлаңыз.');
   }
 }
 
-// Parse Kaspi Pay PDF receipt by extracting text
 async function parsePdfReceipt(pdfBuffer) {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const data = new Uint8Array(pdfBuffer);
@@ -182,23 +167,19 @@ async function parsePdfReceipt(pdfBuffer) {
   const text = content.items.map(i => i.str).join(' ');
   console.log('[receipt] PDF text:', text.substring(0, 500));
 
-  // Receipt ID: "Түбіртек № QR12345678"
   const receiptIdMatch = text.match(/Түбіртек\s*№\s*(QR\d+|\d+)/i);
   if (!receiptIdMatch) {
     console.log('[receipt] no receipt ID found in PDF text');
     return null;
   }
 
-  // Amount: "Төлем жасалды 4 990 ₸" or "1 ₸"
   const amountMatch = text.match(/Төлем жасалды\s+([\d\s]+)\s*₸/);
   const amount = amountMatch
     ? parseFloat(amountMatch[1].replace(/\s/g, ''))
     : null;
 
-  // Seller IIN: "Сатушының ЖСН/БСН 670723400769"
   const iinMatch = text.match(/Сатушының\s+ЖСН\/БСН\s+(\d+)/);
 
-  // Date: "Күні мен уақыты (Астана) 25.05.2026 00:51"
   const dateMatch = text.match(/(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})/);
   let receiptDate = null;
   if (dateMatch) {
@@ -207,7 +188,6 @@ async function parsePdfReceipt(pdfBuffer) {
     receiptDate = new Date(`${year}-${month}-${day}T${time}:00`);
   }
 
-  // Payment method: "Төленді Kaspi Gold"
   const methodMatch = text.match(/Төленді\s+(Kaspi\s+\w+)/i);
 
   return {
@@ -220,7 +200,6 @@ async function parsePdfReceipt(pdfBuffer) {
   };
 }
 
-// Parse photo receipt by reading QR code
 async function parsePhotoReceipt(buffer) {
   const { data, info } = await sharp(buffer)
     .ensureAlpha()
