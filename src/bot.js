@@ -1,3 +1,6 @@
+// © 2025 MirKa Digital. Барлық құқықтар қорғалған.
+// ҚР «Авторлық құқық және сабақтас құқықтар туралы» Заңымен қорғалған.
+// Кодты көшіруге, тарқатуға немесе өзгертуге тыйым салынады.
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const db = require('./database');
