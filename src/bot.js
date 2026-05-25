@@ -150,6 +150,7 @@ const bot = new Telegraf(BOT_TOKEN);
 
 // /start — тіл таңдау
 bot.start(async (ctx) => {
+  console.log(`[user] id=${ctx.from.id} username=@${ctx.from.username || 'none'} name=${ctx.from.first_name}`);
   await ctx.reply(
     '🇰🇿 Тілді таңдаңыз\n🇷🇺 Выберите язык',
     Markup.inlineKeyboard([
